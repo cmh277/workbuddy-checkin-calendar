@@ -1,0 +1,16 @@
+# 运行产物（记录表输出目录）
+signin-records/
+checkin-records.*
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+*.swp
+*~
+
+# 临时与打包产物
+*.tmp
+*.log
+dist/
