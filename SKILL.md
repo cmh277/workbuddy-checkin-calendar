@@ -10,7 +10,7 @@ agent_created: true
 
 自动完成 WorkBuddy 每日积分签到，并把结果累积成一张可读、可核对的可视化记录表（HTML 日历页 + Markdown 表 + CSV 源数据）。
 
-- **签到能力**复用同级 skill `workbuddy-checkin`（负责读取本地登录态、调用官方接口），本 skill 负责**调度 + 记录 + 渲染 + 核对**。
+- **签到能力**复用内置子 skill `workbuddy-checkin/`（vendored，负责读取本地登录态、调用官方接口），本 skill 负责**调度 + 记录 + 渲染 + 核对**；仓库自包含，克隆即可用，无需额外安装依赖。
 - 全流程本机运行，无后端服务，网络仅发往腾讯官方接口。
 
 ## 何时使用

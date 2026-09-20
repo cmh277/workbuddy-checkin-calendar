@@ -13,7 +13,7 @@
 # 参数：
 #   -OutDir <path>   记录输出目录（默认 <当前目录>\signin-records）
 #   -RebuildOnly     只按现有 CSV 重建 MD/HTML，不签到、不追加行
-#   -GuardPath <p>   指定守卫脚本路径（默认自动定位同级的 workbuddy-checkin skill）
+#   -GuardPath <p>   指定守卫脚本路径（默认自动定位：同级 workbuddy-checkin skill，回退本仓库内置 workbuddy-checkin/）
 #   -Title <t>       页面标题（默认「WorkBuddy签到日历」）
 #
 # 编码要求：本文件含中文，必须以 UTF-8 **带 BOM** 保存，否则 PS 5.1 会按 ANSI 读成乱码。
@@ -49,6 +49,9 @@ function Resolve-Guard([string]$explicit) {
     $skillRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
     if ($skillRoot) { $cands += (Join-Path $skillRoot "workbuddy-checkin\checkin_guard.ps1") }
     if ($env:USERPROFILE) { $cands += (Join-Path $env:USERPROFILE ".workbuddy\skills\workbuddy-checkin\checkin_guard.ps1") }
+    # 仓库内 vendored 副本（自包含分发：本仓库已内置 workbuddy-checkin/ 子目录，最低优先级回退）
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    if ($repoRoot) { $cands += (Join-Path $repoRoot "workbuddy-checkin\checkin_guard.ps1") }
     foreach ($c in $cands) { if ($c -and (Test-Path $c)) { return $c } }
     return ""
 }
@@ -83,7 +86,7 @@ $NodeExe = Resolve-Node
 # ---------- 排障：只打印依赖解析结果 ----------
 if ($ShowPaths) {
     Write-Output ("OUTDIR=" + $RecDir)
-    if ($Guard)   { Write-Output ("GUARD=" + $Guard) }   else { Write-Output "GUARD=(未找到，请安装 workbuddy-checkin skill 或用 -GuardPath 指定)" }
+    if ($Guard)   { Write-Output ("GUARD=" + $Guard) }   else { Write-Output "GUARD=(未找到，请检查本仓库内置 workbuddy-checkin/ 或安装 workbuddy-checkin skill，或用 -GuardPath 指定)" }
     if ($NodeExe) { Write-Output ("NODE="  + $NodeExe) } else { Write-Output "NODE=(未找到)" }
     exit 0
 }
@@ -162,7 +165,7 @@ if (-not $RebuildOnly) {
     else {
         # 今日未签到 -> 调守卫自动补签
         if (-not $Guard) {
-            $raw = "RUNNER_ERR: 未找到守卫脚本 checkin_guard.ps1，请先安装 workbuddy-checkin skill 或用 -GuardPath 指定"
+            $raw = "RUNNER_ERR: 未找到守卫脚本 checkin_guard.ps1，请检查本仓库内置 workbuddy-checkin/ 或安装 workbuddy-checkin skill，或用 -GuardPath 指定"
         } else {
             if ($NodeExe) { $env:WB_CHECKIN_NODE = $NodeExe }
             $psExe = Resolve-PsExe

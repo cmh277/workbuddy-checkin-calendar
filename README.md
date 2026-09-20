@@ -4,7 +4,7 @@
 
 产出为**纯静态 HTML**（零 JavaScript），包含统计卡片、带农历的五状态签到日历、以及可追溯的明细表；同时输出 CSV 源数据与 Markdown 版本。
 
-> 本仓库是 Skill 本体。签到能力复用同级 Skill `workbuddy-checkin`（负责读取本地登录态、调用官方接口）；本 Skill 负责**调度 + 记录 + 渲染 + 核对**。
+> 本仓库是 Skill 本体，**已内置**依赖 Skill `workbuddy-checkin`（位于 `workbuddy-checkin/` 子目录，负责读取本地登录态、调用官方接口），开箱即用、无需额外安装；本 Skill 负责**调度 + 记录 + 渲染 + 核对**。
 
 ---
 
@@ -108,13 +108,13 @@ python scripts/add_record.py --csv <dir>/checkin-records.csv \
 
 | 依赖 | 用途 | 缺失时 |
 |------|------|--------|
-| Skill `workbuddy-checkin`（本仓库**不含**） | 读取本地登录态、调用签到接口（`checkin_guard.ps1`） | 报 `RUNNER_ERR`；可用 `-GuardPath` 指定 |
+| Skill `workbuddy-checkin`（**已内置**于 `workbuddy-checkin/`） | 读取本地登录态、调用签到接口（`checkin_guard.ps1`） | 极少见；可用 `-GuardPath` 指定其他路径 |
 | Node.js | 守卫脚本解密本地登录态所需 | 用环境变量 `WB_CHECKIN_NODE` 或标准路径安装 |
 | WorkBuddy 桌面端（已登录） | 提供本地登录态 | 无法签到，提示令牌不可用 |
 | `curl.exe` | 守卫脚本调用接口 | Win10 1803+ 自带 |
 | Python 3 | 仅 `add_record.py` 补记工具需要 | 不影响签到与渲染 |
 
-脚本自动定位 Node（`WB_CHECKIN_NODE` → `~/.workbuddy/binaries/node/versions/*/node.exe` → `PATH` 中的 `node`）与守卫脚本（同级 skill → `~/.workbuddy/skills/workbuddy-checkin/`）。用 `-ShowPaths` 查看实际解析结果。
+脚本自动定位 Node（`WB_CHECKIN_NODE` → `~/.workbuddy/binaries/node/versions/*/node.exe` → `PATH` 中的 `node`）与守卫脚本（优先同级 skill `~/.workbuddy/skills/workbuddy-checkin/`，回退本仓库内置 `workbuddy-checkin/`）。用 `-ShowPaths` 查看实际解析结果。
 
 ## 目录结构
 
@@ -127,6 +127,8 @@ workbuddy-checkin-calendar/
 │   └── design-notes.md         # 页面结构、纯静态切换、配色、农历、周定义、已知坑
 ├── docs/
 │   └── demo.png
+├── workbuddy-checkin/          # 内置依赖（vendored 子 skill）：读令牌 + 调官方接口
+│   ├── SKILL.md  checkin_guard.ps1  scripts/  references/  images/
 └── scripts/
     ├── checkin_calendar.ps1    # 核心：签到调度 + 记录表 + 日历渲染
     └── add_record.py           # 补记工具（幂等）
