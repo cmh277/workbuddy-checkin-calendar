@@ -1,18 +1,51 @@
 ---
 name: workbuddy-checkin
-description: WorkBuddy 每日积分自动签到。自动解密本地登录令牌，调用官方签到 API 完成每日积分领取（100 积分/天，连续第 7 天 1000 积分），并支持配置定时任务。触发词：WorkBuddy 签到、每日积分、check-in、credits。
-version: "1.0.3"
+description: WorkBuddy 每日积分自动签到。经宿主 WBIPC 通道代理签到（脚本不经手令牌），旧版本地令牌解密作为回退。完成每日积分领取（100 积分/天，连续第 7 天 1000 积分），并支持配置定时任务。触发词：WorkBuddy 签到、每日积分、check-in、credits。
+version: "1.1.0"
 license: MIT
 ---
 
 # WorkBuddy 每日积分签到
 
 自动领取 WorkBuddy 每日积分（100 积分/天，连续第 7 天 1000 积分）。
-全流程在本机完成：读取本地登录态 → 调用腾讯官方签到接口。无后端服务。
+全流程在本机完成：**由宿主注入鉴权头** → 调用腾讯官方签到接口。无后端服务。
 
-## 原理
+## 原理（双通路，WBIPC 优先）
 
-1. WorkBuddy 桌面端登录后，会在本地保存登录态。**v5.3.8+ 的新版桌面端**改为明文 JSON 文件：
+### 通路 A：宿主 WBIPC 通道（主路径，推荐）
+
+WorkBuddy 桌面端会开启一条**外部进程通道** WBIPC，并在约定路径写一个发现文件：
+
+```
+~/.workbuddy/wbipc/endpoint.json   →   { "endpoint": "\\\\.\\pipe\\wbipc-<instanceId>", "ticket": "<base64url 32B>" }
+```
+
+通道上注册了 `wb.request` 管道，方法 `http.fetch`。宿主在发请求前**自己注入**鉴权头：
+
+```
+Authorization: Bearer <accessToken>
+X-User-Id: <account.uid>
+X-Enterprise-Id / X-Tenant-Id   （仅企业账号）
+```
+
+因此脚本**完全不经手 accessToken**，也就不受登录态存储格式变化影响。请求路径必须是相对路径
+（宿主把 baseUrl 固定为自己解析出的后端，调用方指定不了 host）；调用方自带的请求头仅允许
+`content-type` / `accept`。
+
+实现：`scripts/wbipc-client.js`（协议）+ `scripts/checkin-via-wbipc.js`（签到逻辑）。
+
+> **为何这是主路径**：桌面端 5.6.0 起 `auth.accessToken` 不再是明文字符串，而是加密信封
+> `{ "$wbEncrypted": 1, "envelope": "<base64>" }`（AES-256-GCM）。解密密钥来自 Electron 原生绑定
+> `workbuddyStorage.loggerGet()`，纯 Node 脚本在原理上取不到 —— 通路 B 因此在 5.6.0+ 上失效。
+> WBIPC 由宿主代理，天生绕开这个死结。
+
+**前置条件**：WorkBuddy 桌面端正在运行且已登录（命名管道随 daemon 生命周期存在）。
+
+### 通路 B：本地令牌（回退）
+
+仅在通路 A 不可用时尝试（客户端未运行 / 未开放该管道 / 无 node）：
+
+1. WorkBuddy 桌面端登录后，会在本地保存登录态。**v5.3.8 ~ 5.5.x** 的桌面端为明文 JSON 文件：
    - macOS：`~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info`
    - 结构 `{ account, auth: { accessToken, refreshToken, expiresAt, ... }, accounts }`，桌面端临近过期会自动刷新，纯 Node 即可读取 `auth.accessToken`。
 2. **旧版 WorkBuddy/CodeBuddy** 仍把 auth session 用 Electron `safeStorage` 加密存于 `state.vscdb`；新版明文文件缺失时回退到此路径，用 Electron 运行时执行 `safeStorage.decryptString()` 解密（macOS 命中钥匙串；Windows/Linux 走 DPAPI/keyring）。
@@ -22,6 +55,9 @@ license: MIT
    - 执行签到：`POST https://copilot.tencent.com/v2/billing/meter/daily-checkin`
    - 认证：`Authorization: Bearer <accessToken>`，并按桌面端 `buildHeaders` 附带 `X-User-Id: <account.uid>`；有 `auth.domain` 时加 `X-Domain`，企业账号另加 `X-Enterprise-Id` / `X-Tenant-Id`
    - 兼容说明：`checkin.ps1` 走上述 `/v2/` 全量签名（对齐桌面端）；`checkin.sh` 仍走不带 `/v2/` 前缀、仅 `Authorization` 的旧写法。**两种写法实测均返回 200**（见 CHANGELOG 1.0.3 的验证矩阵），网关当前未强制 `/v2/` 或 `X-User-Id`；对齐桌面端属前向兼容加固，不是修复 401 的必要条件
+
+### 两条通路共同的行为
+
 5. 脚本幂等：先查状态（命中即跳过）；`daily-checkin` 返回 `code=10001`（今天已签到）同样视为成功，避免重复请求被误报为失败。
 
 > ⚠️ v5.3.8 实测 `checkin-status` 的 `today_checked_in` 字段不可靠（签到成功后仍可能为 `false`）。因此幂等性主要靠 `daily-checkin` 的 `code=10001` 兜底。
@@ -36,14 +72,17 @@ workbuddy-checkin/
 ├── references/
 │   └── dependencies.md         # 依赖清单与平台差异
 └── scripts/
-    ├── decrypt-token.js        # 解密令牌（跨平台）
-    ├── checkin.sh              # macOS / Linux / Git Bash
-    ├── checkin.ps1             # Windows PowerShell
+    ├── wbipc-client.js         # 通路 A：WBIPC 协议客户端（握手 + JSON-RPC，零依赖）
+    ├── checkin-via-wbipc.js    # 通路 A：经宿主代理签到
+    ├── decrypt-token.js        # 通路 B：解密令牌（跨平台）
+    ├── checkin.sh              # 通路 B：macOS / Linux / Git Bash
+    ├── checkin.ps1             # 双通路入口：Windows PowerShell（A 优先，B 回退）
     ├── setup.sh                # macOS / Linux 一键安装
     └── setup.ps1               # Windows 一键安装
 ```
 
 `logs/` 目录运行后自动创建，存放签到日志。
+
 
 ## 依赖
 
@@ -51,12 +90,13 @@ workbuddy-checkin/
 
 | 依赖 | 用途 | 安装方式 |
 |------|------|----------|
-| WorkBuddy 桌面端（已登录） | 提供本地登录态（v5.3.8+ 明文文件 / 旧版 `state.vscdb`） | 官网下载，必须登录过至少一次 |
-| Node.js（推荐 20+，v5.3.8+ 主路径必需） | 读取新版明文登录态、解析 JSON | nodejs.org 下载，或系统包管理器 |
-| curl（macOS/Linux 自带）/ curl.exe | 调用签到 API | Windows 10 1803+ 自带 |
-| Electron 运行时（≥ 30，推荐 37） | **仅旧版** `state.vscdb` 分支解密令牌用 | 仅旧版账户需要，运行 `scripts/setup.sh` 或 `setup.ps1` |
+| WorkBuddy 桌面端（**运行中**且已登录） | 通路 A 提供 WBIPC 通道与鉴权头；通路 B 提供本地登录态 | 官网下载，必须登录过至少一次 |
+| Node.js（推荐 20+，两条通路都需要） | 通路 A 跑 WBIPC 客户端；通路 B 读取明文登录态 | nodejs.org 下载，或系统包管理器 |
+| curl（macOS/Linux 自带）/ curl.exe | **仅通路 B** 调用签到 API | Windows 10 1803+ 自带 |
+| Electron 运行时（≥ 30，推荐 37） | **仅通路 B 的旧版** `state.vscdb` 分支解密令牌用 | 仅旧版账户需要，运行 `scripts/setup.sh` 或 `setup.ps1` |
 
-> v5.3.8+ 用户：装好 Node.js 并登录桌面端即可直接签到，**无需安装 Electron**。Electron 仅用于尚未迁移到新版明文存储的旧版 WorkBuddy/CodeBuddy 账户。
+> 桌面端 **5.6.0+** 用户：装好 Node.js、保持客户端运行并登录，即走通路 A 直接签到，**无需 Electron、无需 curl**。
+> 通路 B 只作为回退保留（客户端未运行、或旧版本桌面端）。
 
 ### 开箱即用 vs 需安装
 
@@ -170,6 +210,19 @@ Windows PowerShell 执行策略用 `-ExecutionPolicy Bypass`；需 `curl.exe`（
 
 ## 排错
 
+**通路 A（WBIPC）相关：**
+
+- **`NOT_WORKBUDDY_ENV`：找不到 `~/.workbuddy/wbipc/endpoint.json`**：WorkBuddy 桌面端没在运行。该发现文件随 daemon 启动而写入、退出而删除。启动客户端即可（自动化任务在客户端内运行，天然满足）。
+- **`宿主未开放 wb.request 管道`**：客户端在，但宿主判定无可用登录态（`getEndpoint()` 或 `getToken()` 为空）。在桌面端重新登录后重试。
+- **`E_ENDPOINT_UNTRUSTED`：服务端证明校验失败**：通道对面不是可信宿主（端点被抢占），或发现文件已过期（客户端重启后 ticket 会换，而旧文件还没删）。重读发现文件；若持续失败，说明有同机进程在冒充该管道。
+- **`E_NOT_CONNECTED`**：宿主自身没有登录态，检查客户端登录状态。
+- **`E_TIMEOUT` / 调用超时**：宿主的 upstream 超时是 50s，本地默认 60s。
+- **握手超时**：握手必须在 5s 内走完（宿主侧硬限制），路径不通时先确认管道名与 ticket 来自**同一份** `endpoint.json`。
+- **404 `404 page not found`**：路径对了但 HTTP 方法不对 —— 签到两个接口都只接受 **POST**（GET 会得到纯文本 404，与路由器的 JSON 404 形态不同，可据此区分）。
+- **手改 `endpoint.json` 无用**：ticket 只做 HMAC 密钥，脚本先验服务端证明才交出自己的证明。
+
+**通路 B（本地令牌）相关：**
+
 - **「获取令牌失败（未知原因）」/ 未找到本地登录态**：先确认 WorkBuddy 桌面端已登录并打开过至少一次。v5.3.8+ 用户检查 Node.js 是否安装（`node -v`），或用 `WB_CHECKIN_NODE` 指定。
 - **v5.3.8 已登录但仍报令牌失败**：本机 skill 版本过旧（< 1.0.2），不识别新版明文存储；升级到 1.0.2+。
 - **当日重跑提示「签到未成功 / code=10001」**：旧版本（< 1.0.2）未把 `code=10001` 识别为「已签到」；1.0.2+ 会正确报告「今日已签到」。
@@ -183,11 +236,14 @@ Windows PowerShell 执行策略用 `-ExecutionPolicy Bypass`；需 `curl.exe`（
 
 ## 安全说明
 
-> ⚠️ **凭据即账号密码**：本 skill 解密的 `accessToken` 等同你的 WorkBuddy 账号密码，具有高敏感性。请务必遵守以下红线：
+> ⚠️ **凭据即账号密码**：通路 B 解密的 `accessToken` 等同你的 WorkBuddy 账号密码，具有高敏感性。请务必遵守以下红线：
 
-- 令牌仅在内存中使用，通过管道立即被签到请求消费，**不写入任何日志文件、不落盘、不回显到终端、不提交到仓库**。
+- **通路 A 完全不接触 accessToken**：脚本只持有 WBIPC 的 ticket（broker 级、随 daemon 生命周期、单向 HMAC 用途），鉴权头由宿主注入。ticket 只做 HMAC 密钥**永不上线**，线上只传 `ticket_id = sha256(ticket).hex[0:16]`（公开标识，泄露不降低 32 字节随机 ticket 的强度）。
+- 通路 B 的令牌仅在内存中使用，通过管道立即被签到请求消费，**不写入任何日志文件、不落盘、不回显到终端、不提交到仓库**。
 - `logs/` 仅记录签到结果（积分 / 连续天数 / 成功失败），**绝不含令牌原文**。切勿将日志或脚本输出粘贴分享。
 - 网络访问仅发往腾讯官方接口 `copilot.tencent.com/billing/meter/*` 与 `copilot.tencent.com/v2/billing/meter/*`，不上传任何第三方。
+- 通路 A 的请求头白名单是硬约束：调用方只能带 `content-type` / `accept`，**带鉴权头会被宿主拒绝**（`E_BAD_REQUEST`），路径也必须是相对路径，宿主不允许调用方指定 host —— 登录态只会被带到宿主自己解析出的后端。
+- 通路 A 的响应头只透传 `content-type` / `content-length` / `etag` / `last-modified` / `retry-after` / `location` / `x-request-id`，`set-cookie` 之类会话状态永不出通道。
 - 解密成功时脚本会向 stderr 打印一行安全提示（不影响 stdout 的 token 管道），便于你确认凭据正在被使用。
 - 请勿用于他人账户、批量注册刷分或任何违反 WorkBuddy 用户协议的用途；使用者自行承担使用风险。
 
