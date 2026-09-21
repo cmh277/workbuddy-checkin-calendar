@@ -277,18 +277,21 @@ foreach ($r0 in $rows) {
     $ts0 = [string]$r0."执行时间"
     if ($ts0.Length -lt 19) { continue }
     if ($ts0 -lt $weekStartStr) { continue }
-    if ([string]$r0."执行结果" -match "签到成功") { $nWeekOk++ }
+    # 「该日签到成功」的口径：本工具亲手领取（签到成功）+ 当日已完成（今日已签到）都算。
+    # 否则会出现「已签 N 天」与「本周签到成功 0 次」自相矛盾的表格。
+    if ([string]$r0."执行结果" -match "签到成功" -or [string]$r0."执行结果" -match "今日已签到") { $nWeekOk++ }
     $mw = [regex]::Match([string]$r0."积分/连签", "credit=(\d+)")
     if ($mw.Success) { $sumWeekCredit += [int]$mw.Groups[1].Value }
 }
 if ($nWeekOk -gt 7) { $nWeekOk = 7 }     # 一周最多 7 天，上限封顶
 
 # ---------- 最近一次「签到成功」 ----------
-# 取最后一条【真实签到成功】记录（不含「今日已签到（守卫跳过）」等跳过行）。
+# 同样采用「该日签到成功」口径：包含「今日已签到」这类当日已完成行（它们表示当天确已签上）。
 $lastOkStamp  = ""
 $lastOkCredit = ""
 for ($i = $rows.Count - 1; $i -ge 0; $i--) {
-    if ([string]$rows[$i]."执行结果" -match "签到成功") {
+    $resI = [string]$rows[$i]."执行结果"
+    if ($resI -match "签到成功" -or $resI -match "今日已签到") {
         $lastOkStamp = [string]$rows[$i]."执行时间"
         $ml = [regex]::Match([string]$rows[$i]."积分/连签", "credit=(\d+)")
         if ($ml.Success) { $lastOkCredit = $ml.Groups[1].Value }
@@ -311,7 +314,13 @@ foreach ($r0 in $rows) {
         $d0   = $ts0.Substring(0, 10)
         if ($firstRecDate -eq "" -or $d0 -lt $firstRecDate) { $firstRecDate = $d0 }
         $res0 = [string]$r0."执行结果"
-        if ($res0 -match "签到成功") {
+        # 日历「日状态」只看**当天是否处于已签到状态**：
+        #   「签到成功」  = 本次真实领取到积分
+        #   「今日已签到」= 当日已完成（可能由更早一次运行或其它入口领取）
+        # 两者都表示当天已签，必须都记 ok。否则一旦某天只留下「今日已签到」行，
+        # 日历会把已签日误报成「未签」，与守卫标记和接口事实矛盾。
+        # （上方 $nWeekOk 与「最近一次签到成功」已统一为此口径，见各自注释。）
+        if ($res0 -match "签到成功" -or $res0 -match "今日已签到") {
             $dayStatus[$d0] = "ok"
         } elseif ($res0 -match "失败") {
             if (-not ($dayStatus.ContainsKey($d0) -and $dayStatus[$d0] -eq "ok")) { $dayStatus[$d0] = "bad" }

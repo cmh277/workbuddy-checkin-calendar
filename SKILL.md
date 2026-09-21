@@ -1,7 +1,7 @@
 ---
 name: workbuddy-checkin-calendar
 description: WorkBuddy 签到日历 —— 自动签到并维护一张可视化记录表（统计卡片 + 五状态签到日历 + 明细表），支持补记缺失的积分记录、按周统计与口径核查。适用于查询/展示 WorkBuddy 签到情况、签到日历、签到记录表、本周签到成功次数、已领取积分、连签天数，以及修复因手动签到导致的积分统计偏小。触发词：签到日历、签到记录表、签到统计、签到明细、查看签到、补记签到、WorkBuddy 积分。
-version: "1.0.0"
+version: "1.0.1"
 license: MIT
 agent_created: true
 ---
@@ -10,7 +10,7 @@ agent_created: true
 
 自动完成 WorkBuddy 每日积分签到，并把结果累积成一张可读、可核对的可视化记录表（HTML 日历页 + Markdown 表 + CSV 源数据）。
 
-- **签到能力**复用内置子 skill `workbuddy-checkin/`（vendored，负责读取本地登录态、调用官方接口），本 skill 负责**调度 + 记录 + 渲染 + 核对**；仓库自包含，克隆即可用，无需额外安装依赖。
+- **签到能力**复用内置子 skill `workbuddy-checkin/`（vendored，经宿主 WBIPC 通道代理签到并注入鉴权头，旧版本地令牌解密为回退），本 skill 负责**调度 + 记录 + 渲染 + 核对**；仓库自包含，克隆即可用，无需额外安装依赖。
 - 全流程本机运行，无后端服务，网络仅发往腾讯官方接口。
 
 ## 何时使用
@@ -138,10 +138,10 @@ python scripts/add_record.py --csv <dir>/checkin-records.csv \
 
 | 依赖 | 用途 | 缺失时 |
 |------|------|--------|
-| skill `workbuddy-checkin` | 读取本地登录态、调用签到接口（`checkin_guard.ps1`） | 报 `RUNNER_ERR`，记录为失败；用 `-GuardPath` 指定 |
-| Node.js | 守卫脚本解密本地登录态所需 | 用环境变量 `WB_CHECKIN_NODE` 或标准路径安装 |
-| WorkBuddy 桌面端（已登录） | 提供本地登录态 | 无法签到，提示令牌不可用 |
-| `curl.exe` | 守卫脚本调用接口 | Win10 1803+ 自带 |
+| skill `workbuddy-checkin` | 经宿主 WBIPC 通道代理签到（`checkin_guard.ps1` → `checkin-via-wbipc.js`），旧版本地令牌解密为回退 | 报 `RUNNER_ERR`，记录为失败；用 `-GuardPath` 指定 |
+| Node.js | WBIPC 客户端（握手 + JSON-RPC）；回退路径也用它读登录态 | 用环境变量 `WB_CHECKIN_NODE` 或标准路径安装 |
+| WorkBuddy 桌面端（**运行中**且已登录） | 提供 WBIPC 通道与鉴权头（`~/.workbuddy/wbipc/endpoint.json`） | 无法签到，报「客户端未运行」 |
+| `curl.exe` | 仅回退路径（本地令牌）调用接口 | Win10 1803+ 自带 |
 | Python 3 | 仅 `add_record.py` 补记工具需要 | 不影响签到与渲染 |
 
 脚本自动定位 Node（`WB_CHECKIN_NODE` → `~/.workbuddy/binaries/node/versions/*/node.exe` → `PATH` 中的 `node`）与守卫脚本（同级 skill → `~/.workbuddy/skills/workbuddy-checkin/`）。用 `-ShowPaths` 查看实际解析结果。
@@ -158,7 +158,7 @@ python scripts/add_record.py --csv <dir>/checkin-records.csv \
 
 ## 安全说明
 
-- 本 skill **不读取、不保存任何令牌**；令牌读取与网络请求全部在 `workbuddy-checkin` 的守卫脚本内完成，本 skill 只消费其文本输出。
+- 本 skill **不读取、不保存任何令牌**；凭据获取与网络请求全部在 `workbuddy-checkin` 的守卫脚本内完成（默认路径下由宿主注入鉴权头，脚本本身不经手 token），本 skill 只消费其文本输出。
 - 记录的 `积分/连签` 字段仅含 `credit=N streak=M`，**不含令牌、不含账号信息**。
 - 网络访问：本 skill 自身不发起网络请求；间接请求仅发往腾讯官方接口 `copilot.tencent.com`。
 - 写文件范围：仅 `-OutDir` 指定目录内的 5 个记录文件。
