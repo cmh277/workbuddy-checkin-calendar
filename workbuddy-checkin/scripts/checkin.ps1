@@ -1,7 +1,13 @@
 ﻿# ============================================================
 # WorkBuddy 每日积分签到（Windows PowerShell 版，兼容 PS 5.1）
 #
-# 流程：读取本地令牌 -> 查询签到状态 -> 未签到则领取 -> 写日志
+# 流程（双通路，WBIPC 优先）：
+#   通路 A（推荐）：经宿主 WBIPC 通道 wb.request/http.fetch 发请求。
+#                 宿主自动注入 Authorization / X-User-Id，脚本**不经手令牌**。
+#                 不受登录态存储格式变化影响（5.6.0 起 accessToken 已信封化）。
+#                 前置：WorkBuddy 桌面端正在运行且已登录。
+#   通路 B（回退）：读取本地令牌 -> 查询签到状态 -> 未签到则领取 -> 写日志
+#                 仅在通路 A 不可用时尝试（客户端未运行 / 未开放该管道 / 无 node）。
 # 用法：
 #   powershell -ExecutionPolicy Bypass -File checkin.ps1
 # 或（显式指定运行时）：
@@ -69,9 +75,38 @@ function Find-Electron {
     return ""
 }
 
+# ============================================================
+# 通路 A：WBIPC（宿主代理，不经手令牌）
+# ============================================================
+$NodeBin = Find-Node
+$WbipcScript = Join-Path $ScriptDir "checkin-via-wbipc.js"
+if ($NodeBin -and (Test-Path $WbipcScript)) {
+    $wbOut = @()
+    $wbCode = 1
+    $prevEnc = [Console]::OutputEncoding
+    try {
+        # Node 一律输出 UTF-8；PS 5.1 默认按控制台代码页解读，不改会中文乱码
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+        $wbOut = @(& $NodeBin $WbipcScript 2>$null)
+        $wbCode = $LASTEXITCODE
+    } catch {
+        Write-Log "通路 A 执行异常：$($_.Exception.Message)"
+        $wbCode = 1
+    } finally {
+        [Console]::OutputEncoding = $prevEnc
+    }
+    if ($wbOut.Count -gt 0) { $wbOut | ForEach-Object { Write-Log ([string]$_) } }
+    if ($wbCode -eq 0) { exit 0 }
+    Write-Log "通路 A 不可用（exit=$wbCode），回退到通路 B（本地令牌）"
+} else {
+    Write-Log "通路 A 前置缺失（node 或 checkin-via-wbipc.js 不存在），回退到通路 B（本地令牌）"
+}
+
+# ============================================================
+# 通路 B：本地令牌（回退）
+# ============================================================
 # 1. 读取令牌：Node 优先，Electron 回退
 $Token = ""; $AccUid = ""; $AccDomain = ""; $EntId = ""
-$NodeBin = Find-Node
 if ($NodeBin) {
     try {
         $outLines = & $NodeBin $DecryptJs 2>$null
