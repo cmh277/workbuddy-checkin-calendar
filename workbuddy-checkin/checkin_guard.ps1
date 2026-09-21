@@ -44,16 +44,38 @@ if (Test-Path $Marker) {
 Log "not signed today -> run checkin"
 
 # ---------- Set Node runtime (needed by token decrypt) ----------
-$env:WB_CHECKIN_NODE = "C:\Users\admin\.workbuddy\binaries\node\versions\22.22.2-3\node.EXE"
+# PORTABILITY: do NOT hard-code an absolute user path here. Reuse the caller's
+# WB_CHECKIN_NODE when it is valid; otherwise probe this machine's managed Node
+# runtime dir, then fall back to `node` on PATH. (A hard-coded path from another
+# machine silently overrides the correct value and breaks the decrypt chain.)
+if (-not ($env:WB_CHECKIN_NODE -and (Test-Path $env:WB_CHECKIN_NODE))) {
+    $nodeHit = ""
+    if ($env:USERPROFILE) {
+        $nodeBase = Join-Path $env:USERPROFILE ".workbuddy\binaries\node\versions"
+        if (Test-Path $nodeBase) {
+            $nodeFound = @(Get-ChildItem $nodeBase -Directory -ErrorAction SilentlyContinue |
+                           Where-Object { Test-Path (Join-Path $_.FullName "node.exe") } |
+                           Sort-Object Name -Descending)
+            if ($nodeFound.Count -gt 0) { $nodeHit = Join-Path $nodeFound[0].FullName "node.exe" }
+        }
+    }
+    if (-not $nodeHit) {
+        try { $nc = Get-Command node -ErrorAction SilentlyContinue; if ($nc) { $nodeHit = $nc.Source } } catch {}
+    }
+    if ($nodeHit) { $env:WB_CHECKIN_NODE = $nodeHit }
+}
 
 # ---------- Re-establish user-profile env vars ----------
 # The automation scheduler launches this script in a stripped environment where
 # LOCALAPPDATA / APPDATA / USERPROFILE are often empty, so decrypt-token.js cannot
-# locate workbuddy-desktop.info and the check-in fails. Rebuild them from the known
-# Node path (6 levels up = user profile) so the token file is always found.
+# locate workbuddy-desktop.info and the check-in fails. Prefer the real profile,
+# else derive it from the managed Node path (6 levels up = user profile).
 try {
-    $prof = $env:WB_CHECKIN_NODE
-    for ($i = 0; $i -lt 6; $i++) { $prof = Split-Path -Parent $prof }
+    $prof = $env:USERPROFILE
+    if (-not ($prof -and (Test-Path $prof))) {
+        $prof = $env:WB_CHECKIN_NODE
+        for ($i = 0; $i -lt 6; $i++) { $prof = Split-Path -Parent $prof }
+    }
     if ($prof -and (Test-Path $prof)) {
         $env:USERPROFILE  = $prof
         $env:HOME         = $prof
