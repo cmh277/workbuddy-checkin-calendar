@@ -1,5 +1,39 @@
 # 变更日志
 
+## [1.1.0] - 2026-09-21
+
+### 新增
+
+- **WBIPC 通路：经宿主代理签到，脚本不再经手 `accessToken`**（`scripts/wbipc-client.js` + `scripts/checkin-via-wbipc.js`，均为零依赖纯 Node）。
+  - 桌面端会开启外部进程通道 **WBIPC**，并在约定路径写发现文件 `~/.workbuddy/wbipc/endpoint.json`：`{ "endpoint": "\\.\pipe\wbipc-<instanceId>", "ticket": "<base64url 32B>" }`。
+  - 该通道注册了 `wb.request` 管道（方法 `http.fetch`）；**宿主在发请求前自己注入** `Authorization: Bearer <token>`，个人账号另带 `X-User-Id`，企业账号另带 `X-Enterprise-Id` / `X-Tenant-Id`。脚本只发相对路径与业务参数，**从不接触令牌**。
+  - 协议要点：换行分帧 JSON（NDJSON，单帧 ≤ 1 MiB）；握手三态 `hello → prove → ready`（5s 内完成）；**服务端先自证**，客户端验过 `server_proof` 才交出 `client_proof`，验不过即硬失败（防端点抢占）；`HMAC-SHA256(ticket, 长度前缀拼接 transcript)`；ticket 仅作 HMAC 密钥**永不上线**，线上只传 `ticket_id = sha256(ticket).hex[0:16]`。
+  - 宿主侧硬约束：请求路径必须为相对路径，调用方**指定不了 host**（登录态只会被带到宿主自己解析出的后端）；调用方自带请求头白名单仅 `content-type` / `accept`，带鉴权头会被拒绝（`E_BAD_REQUEST`）。
+
+### 修复
+
+- **`checkin_guard.ps1` 硬编码 node 路径，导致他人机器签到失败**：原代码为 `$env:WB_CHECKIN_NODE = "C:\Users\admin\.workbuddy\...\node.EXE"`，把上游作者机器的绝对路径**无条件覆盖**调用方传入的正确值。任何其他 Windows 用户（用户名非 `admin`、或 node 版本目录不同）都会因该路径不存在而令令牌解密链路失败。
+  - 现改为动态解析，优先级：① 沿用调用方已设置且真实存在的 `WB_CHECKIN_NODE` → ② 探测 `~/.workbuddy/binaries/node/versions/*`（版本号倒序取第一个含 `node.exe` 的） → ③ 回退 `PATH` 中的 `node`。
+  - profile 还原逻辑同时改为**优先使用真实 `USERPROFILE`**，仅在取不到时才从 node 路径上推 6 层。
+- **`checkin_calendar.ps1`（日历 skill）「成功」口径不一致，导致已签日误报未签**：脚本内部判定把「今日已签到」算作已签，但三处渲染/统计只认「签到成功」，同一份数据下表格自相矛盾（已签日被标「未签」、同时出现「已签 1 天」与「本周签到成功 0 次」）。三处统一为「该日签到成功」口径。
+
+### 变更
+
+- **`checkin.ps1` 改为双通路（通路 A：WBIPC 优先；通路 B：本地令牌回退）**：先尝试 `node checkin-via-wbipc.js`，成功即 `exit 0`；失败才落入原有的令牌流程。顺带修正 PS 5.1 读 node 输出时的中文乱码（临时将 `[Console]::OutputEncoding` 切到 UTF-8，`finally` 还原）。
+- **为什么必须加这条路**：桌面端 **5.6.0** 起 `auth.accessToken` 不再是明文字符串，而是加密信封 `{ "$wbEncrypted": 1, "envelope": "<base64>" }`（AES-256-GCM，suite 1）。其解密根密钥来自 Electron **原生绑定** `electron.workbuddyStorage.loggerGet()`，纯 Node 外部进程**在原理上取不到** —— 令牌解密路径在 5.6.0+ 必然失效，与 skill 自身实现无关。
+- 通路 B 的适用版本范围收窄为 **v5.3.8 ~ v5.5.x**（明文登录态文件存在）及更旧的 `state.vscdb` 账户。
+- **新增前置条件**：通路 A 需要 WorkBuddy 桌面端**正在运行且已登录**（命名管道随 daemon 生命周期存在/销毁）。客户端整天未启动则当日无法签到；自动化任务在客户端内运行，天然满足。
+
+### 改进
+
+- `SKILL.md`：原理章节重写为「双通路（WBIPC 优先）」并补全协议规格；依赖表区分两条通路（**通路 A 不需要 `curl`、不需要 Electron**）；排错章节拆分为「通路 A 相关」（`NOT_WORKBUDDY_ENV` / 管道不可见 / `E_ENDPOINT_UNTRUSTED` / `E_NOT_CONNECTED` / 握手超时 / 404 实为 HTTP 方法不对）与「通路 B 相关」；安全说明重写（通路 A 不接触 token、ticket 单向用途、请求/响应头白名单）。
+- `.gitignore` 补充 `last_success.txt`：该幂等标记文件由 `checkin_guard.ps1` 写入 skill 根目录，原忽略规则（`logs/`、`*.log` 等）未覆盖，`git add .` 时会误提交。
+
+### 已知限制
+
+- 通路 A 依赖桌面端内部通道，属**未公开接口**，宿主升级可能变更协议；通路 B 作为回退保留。
+- 签到接口**只接受 POST**：GET 会返回纯文本 `404 page not found`（与路由器的 JSON 404 形态不同，可据此区分「方法错」与「路径错」）。
+
 ## [1.0.3] - 2026-08-12
 
 ### 修复
